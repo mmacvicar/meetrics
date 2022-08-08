@@ -1,7 +1,10 @@
 package metrics
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"regexp"
 	"sync"
 	"time"
@@ -9,12 +12,13 @@ import (
 	_ "github.com/jinzhu/gorm/dialects/mysql"
 	"google.golang.org/api/calendar/v3"
 
+	"math/rand"
+
 	"github.com/chasdevs/meetrics/pkg/apis"
 	"github.com/chasdevs/meetrics/pkg/data"
 	"github.com/chasdevs/meetrics/pkg/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
-	"math/rand"
 )
 
 // Types
@@ -36,9 +40,15 @@ func CompileMetrics(date time.Time) {
 }
 
 func compileMetricsForAllUsersAndGetEventChannels(date time.Time) []<-chan UserEvent {
-
+	ctxLog := log.WithFields(log.Fields{"date": date.Format("2006-01-02")})
 	// All Users
 	users := data.Mgr.GetAllUsers()
+
+	existingUsersForDate := data.Mgr.GetUsersWithMeetingsMinsbyDate(date)
+	existingUsersMap := make(map[uint]bool)
+	for i := 0; i < len(existingUsersForDate); i += 1 {
+		existingUsersMap[existingUsersForDate[i].ID] = true
+	}
 
 	// Limit the number of requests we make at once
 	concurrency := 20
@@ -46,9 +56,21 @@ func compileMetricsForAllUsersAndGetEventChannels(date time.Time) []<-chan UserE
 	eventChans := make([]<-chan UserEvent, len(users))
 
 	for i, user := range users {
+
+		// check if file exist and load it
+		cacheOldPath := getCacheFilenameOldPathForUser(date, user)
+		cachePath := getCacheFilenamePathForUser(date, user)
+		os.Rename(cacheOldPath, cachePath)
+
 		eventChan := make(chan UserEvent, 10000)
-		sem <- true // Start reserving space in the semaphore.
-		go compileMetricsForUserWithSemaphore(date, user, eventChan, sem)
+		if _, ok := existingUsersMap[user.ID]; ok {
+			ctxLog.Info("Skipping ", user.Email, " because it already has data")
+			close(eventChan)
+		} else {
+			ctxLog.Info("Not skipping ", user.Email, " because it does not have data")
+			sem <- true // Start reserving space in the semaphore.
+			go compileMetricsForUserWithSemaphore(date, user, eventChan, sem)
+		}
 		eventChans[i] = eventChan
 	}
 
@@ -56,7 +78,6 @@ func compileMetricsForAllUsersAndGetEventChannels(date time.Time) []<-chan UserE
 	for i := 0; i < cap(sem); i++ {
 		sem <- true // Attempt to send to semaphore; will only work when the async jobs have popped from it.
 	}
-
 	return eventChans
 }
 
@@ -64,16 +85,12 @@ func generateEventMap(eventChans []<-chan UserEvent) map[string]*calendar.Event 
 
 	eventMap := make(map[string]*calendar.Event)
 	for userEvent := range merge(eventChans...) {
-
 		event := userEvent.event
-
 		// Store the event in the map
 		if _, ok := eventMap[event.Id]; !ok {
 			eventMap[event.Id] = event
 		}
-
 	}
-
 	return eventMap
 }
 
@@ -95,10 +112,28 @@ func CompileMetricsForUser(date time.Time, user data.User, eventChan chan<- User
 	ctxLog.WithField("numEvents", len(events)).Debug("Got Events.")
 
 	meetingMins := map[string]uint{
-		"mins0":     0,
-		"mins1":     0,
-		"mins2":     0,
-		"mins3Plus": 0,
+		"mins0":       0,
+		"mins1":       0,
+		"mins2":       0,
+		"mins3":       0,
+		"mins4":       0,
+		"mins5":       0,
+		"mins6":       0,
+		"mins7":       0,
+		"mins8":       0,
+		"mins9":       0,
+		"mins10Plus":  0,
+		"count0":      0,
+		"count1":      0,
+		"count2":      0,
+		"count3":      0,
+		"count4":      0,
+		"count5":      0,
+		"count6":      0,
+		"count7":      0,
+		"count8":      0,
+		"count9":      0,
+		"count10Plus": 0,
 	}
 
 	for _, event := range events {
@@ -123,10 +158,37 @@ func CompileMetricsForUser(date time.Time, user data.User, eventChan chan<- User
 		switch {
 		case attendees == 0:
 			meetingMins["mins0"] += mins
-		case attendees == 2:
+			meetingMins["count0"] += 1
+		case attendees == 1:
 			meetingMins["mins1"] += mins
-		case attendees > 2:
-			meetingMins["mins2Plus"] += mins
+			meetingMins["count1"] += 1
+		case attendees == 2:
+			meetingMins["mins2"] += mins
+			meetingMins["count2"] += 1
+		case attendees == 3:
+			meetingMins["mins3"] += mins
+			meetingMins["count3"] += 1
+		case attendees == 4:
+			meetingMins["mins4"] += mins
+			meetingMins["count4"] += 1
+		case attendees == 5:
+			meetingMins["mins5"] += mins
+			meetingMins["count5"] += 1
+		case attendees == 6:
+			meetingMins["mins6"] += mins
+			meetingMins["count6"] += 1
+		case attendees == 7:
+			meetingMins["mins7"] += mins
+			meetingMins["count7"] += 1
+		case attendees == 8:
+			meetingMins["mins8"] += mins
+			meetingMins["count8"] += 1
+		case attendees == 9:
+			meetingMins["mins9"] += mins
+			meetingMins["count9"] += 1
+		case attendees > 9:
+			meetingMins["mins10Plus"] += mins
+			meetingMins["count10Plus"] += 1
 		}
 
 		// send event to channel
@@ -147,9 +209,9 @@ func shouldProcessEvent(event *calendar.Event) bool {
 
 	isCancelled := event.Status == "cancelled"
 	hasStartAndEnd := event.Start != nil && event.End != nil && event.Start.DateTime != "" && event.End.DateTime != ""
-	belongsToRecurringEvent := event.RecurringEventId != ""
+	//belongsToRecurringEvent := event.RecurringEventId != ""
 
-	if isCancelled || !hasStartAndEnd || belongsToRecurringEvent {
+	if isCancelled || !hasStartAndEnd {
 		return false
 	}
 
@@ -162,11 +224,12 @@ func shouldProcessEvent(event *calendar.Event) bool {
 
 func shouldSaveEvent(event *calendar.Event) bool {
 
-	isRecurring := len(event.Recurrence) > 0
-	multipleAttendees := numAttendees(event) > 2
-	isRootEvent := !regexp.MustCompile(`(\w+)_\w+`).MatchString(event.Id) // ID is not one of recurring event like "2389fhdicvn_R20170310T200000"
+	// isRecurring := len(event.Recurrence) > 0
+	// multipleAttendees := numAttendees(event) > 1
+	// isRootEvent := !regexp.MustCompile(`(\w+)_\w+`).MatchString(event.Id) // ID is not one of recurring event like "2389fhdicvn_R20170310T200000"
 
-	return isRecurring && isRootEvent && multipleAttendees
+	// return isRecurring && isRootEvent && multipleAttendees
+	return false
 }
 
 func numAttendees(event *calendar.Event) uint8 {
@@ -211,14 +274,69 @@ func getEventsForUser(date time.Time, user data.User) []*calendar.Event {
 		"timeMin": timeMin,
 	}).Debug("Querying user calendar for Events")
 
-	calendarApi := apis.Calendar(user.Email)
-	eventList, err := calendarApi.Events.List(user.Email).TimeMin(timeMin).TimeMax(timeMax).Do()
+	// TODO: Implemnt local caching
+	// Key email and date
+
+	// check if file exist and load it
+	cachePath := getCacheFilenamePathForUser(date, user)
+	cacheFile, err := os.OpenFile(cachePath, os.O_RDONLY, 0600)
+	var eventList = &calendar.Events{}
+	cached := false
+	if err == nil {
+		target := &eventList
+		if err := json.NewDecoder(cacheFile).Decode(target); err != nil {
+			ctxLog.Error("Could not read cache file.", err)
+		} else {
+			ctxLog.Info("Read cached events ", cachePath)
+			cached = true
+		}
+		defer func() {
+			if err := cacheFile.Close(); err != nil {
+				panic(err)
+			}
+		}()
+	}
+	if !cached {
+		ctxLog.Info("Querying Google Calendar for events for user ", user.Email, " and date ", date.Format("2006-01-02"))
+		calendarApi := apis.Calendar(user.Email)
+		eventList, err = calendarApi.Events.List(user.Email).TimeMin(timeMin).TimeMax(timeMax).SingleEvents(true).Do()
+	}
+
 	if err != nil {
-		ctxLog.Error("Could not fetch events for user.")
+		ctxLog.Error("Could not fetch events for user.", err)
 		return []*calendar.Event{}
 	}
 
+	json, err := eventList.MarshalJSON()
+	if err != nil {
+		ctxLog.Error("Could not marshal events for user.", err)
+		return []*calendar.Event{}
+	}
+
+	// open output file
+	fo, err := os.Create(cachePath)
+	if err != nil {
+		panic(err)
+	}
+	// close fo on exit and check for its returned error
+	defer func() {
+		if err := fo.Close(); err != nil {
+			panic(err)
+		}
+	}()
+	if _, err := fo.Write(json); err != nil {
+		panic(err)
+	}
+
 	return eventList.Items
+}
+
+func getCacheFilenameOldPathForUser(date time.Time, user data.User) string {
+	return fmt.Sprintf("cache/cache_%s_%s.json", user.Email, date.Format("2006-01-02"))
+}
+
+func getCacheFilenamePathForUser(date time.Time, user data.User) string {
+	return fmt.Sprintf("cache/%d/%02d/cache_%s_%s.json", date.Year(), date.Month(), user.Email, date.Format("2006-01-02"))
 }
 
 func getDummyEventsForUser(date time.Time, user data.User) []*calendar.Event {
@@ -348,7 +466,7 @@ func getEventLengthMins(event *calendar.Event) uint {
 
 func parseEventDateTime(e *calendar.EventDateTime) time.Time {
 
-	result, err := time.Parse(EventDateTimeFormat, e.DateTime)
+	result, err := time.Parse(time.RFC3339, e.DateTime)
 
 	if err != nil {
 		log.WithFields(log.Fields{

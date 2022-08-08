@@ -17,3 +17,4 @@ vendor
 
 config/service_account_key.json
 config/production.yml
+cache/

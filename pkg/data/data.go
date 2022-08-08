@@ -1,10 +1,11 @@
 package data
 
 import (
+	"time"
+
 	"github.com/chasdevs/meetrics/pkg/conf"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
-	"time"
 )
 
 type Manager interface {
@@ -19,6 +20,7 @@ type Manager interface {
 	GetAllUsers() []User
 	GetUserByEmail(email string) User
 	GetUserById(id int) User
+	GetUsersWithMeetingsMinsbyDate(date time.Time) []User
 }
 
 type manager struct {

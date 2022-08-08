@@ -35,6 +35,14 @@ func (mgr *manager) GetUserByEmail(email string) User {
 	return user
 }
 
+func (mgr *manager) GetUsersWithMeetingsMinsbyDate(date time.Time) []User {
+	var users []User
+	if err := mgr.db.Select("users.*").Joins("INNER JOIN user_meeting_mins on user_meeting_mins.user_id=users.id").Where("user_meeting_mins.date=?", date.Format("2006-01-02")).Find(&users).Error; err != nil {
+		log.Fatal(err)
+	}
+	return users
+}
+
 func (mgr *manager) GetUserById(id int) User {
 	var user User
 	mgr.db.First(&user, "id = ?", id)
